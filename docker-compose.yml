@@ -1,0 +1,32 @@
+# 전체 실행:   docker compose up -d --build        (앱 + Kafka + Redis)
+# 인프라만:    docker compose up -d redpanda valkey (앱은 ./gradlew bootRun)
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      SPRING_DATA_REDIS_HOST: valkey
+    depends_on:
+      - redpanda
+      - valkey
+
+  redpanda:
+    image: redpandadata/redpanda:v24.3.6
+    container_name: redpanda
+    command:
+      - redpanda start
+      - --mode dev-container # 토픽 자동 생성 포함
+      - --smp 1
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --set redpanda.default_topic_partitions=3 # waiting-queue 토픽 파티션 3
+    ports:
+      - "19092:19092"
+
+  valkey:
+    image: valkey/valkey:8
+    container_name: valkey # load-test.sh 가 docker exec valkey 로 접근
+    ports:
+      - "6379:6379"

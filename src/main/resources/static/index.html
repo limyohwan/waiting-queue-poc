@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>입장 대기열</title>
+<style>
+:root {
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+  --muted: #898781; --line: #e1e0d9; --ring: rgba(11,11,11,.10);
+  --accent: #2a78d6; --ok: #006300;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --line: #2c2c2a; --ring: rgba(255,255,255,.10);
+    --accent: #3987e5; --ok: #0ca30c;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--plane); color: var(--ink);
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+}
+.card {
+  width: min(420px, 100%); background: var(--surface);
+  border: 1px solid var(--ring); border-radius: 20px;
+  padding: 48px 32px 40px; text-align: center;
+  box-shadow: 0 1px 2px var(--ring);
+}
+.eyebrow { font-size: 13px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; }
+h1 { font-size: 22px; font-weight: 700; margin: 8px 0 32px; }
+[hidden] { display: none !important; }
+
+/* 진입 전 */
+label { display: block; font-size: 13px; color: var(--ink-2); text-align: left; margin-bottom: 6px; }
+input {
+  width: 100%; padding: 12px 14px; font-size: 15px; font-family: inherit;
+  color: var(--ink); background: var(--plane);
+  border: 1px solid var(--line); border-radius: 10px; outline: none;
+}
+input:focus { border-color: var(--accent); }
+button {
+  width: 100%; margin-top: 16px; padding: 14px; font-size: 15px; font-weight: 600;
+  font-family: inherit; color: #fff; background: var(--accent);
+  border: none; border-radius: 10px; cursor: pointer;
+}
+button:hover { filter: brightness(1.08); }
+button:active { transform: translateY(1px); }
+/* 보조 버튼(자리 반납 등) — 강조색 대신 외곽선 */
+button.ghost { color: var(--ink); background: transparent; border: 1px solid var(--line); }
+button.ghost:hover { filter: none; border-color: var(--accent); }
+.error { margin-top: 12px; font-size: 13px; color: #d03b3b; min-height: 18px; }
+
+/* 대기 중 */
+.pulse {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); margin-right: 8px; vertical-align: 2px;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: .3 } 50% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none } }
+.rank-label { font-size: 14px; color: var(--ink-2); }
+.rank-num { font-size: 72px; font-weight: 800; line-height: 1.1; margin: 4px 0; }
+.rank-total { font-size: 14px; color: var(--muted); margin-bottom: 28px; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar > div { height: 100%; width: 0%; background: var(--accent); border-radius: 3px; transition: width .6s ease; }
+.hint { margin-top: 24px; font-size: 12px; color: var(--muted); }
+.uid { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+/* 입장 완료 */
+.check {
+  width: 64px; height: 64px; margin: 0 auto 20px; border-radius: 50%;
+  background: var(--ok); color: #fff; font-size: 32px; line-height: 64px;
+}
+.admitted-msg { font-size: 15px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<main class="card">
+  <p class="eyebrow">Waiting Queue POC</p>
+
+  <!-- 상태 1: 진입 전 -->
+  <section id="view-enter">
+    <h1>입장 대기열</h1>
+    <label for="userId">사용자 ID</label>
+    <input id="userId" autocomplete="off" spellcheck="false">
+    <button id="enterBtn">대기열 진입</button>
+    <p id="enterError" class="error"></p>
+  </section>
+
+  <!-- 상태 2: 접수 처리 중 (NOT_FOUND 폴링 구간) -->
+  <section id="view-pending" hidden>
+    <h1>접수 처리 중</h1>
+    <p class="rank-label"><span class="pulse"></span>대기열에 등록하고 있어요…</p>
+    <p class="hint">진입 요청이 브로커를 거쳐 처리되는 중입니다. 잠시만 기다려 주세요.</p>
+    <p class="uid" id="pendingUid"></p>
+  </section>
+
+  <!-- 상태 3: 대기 중 -->
+  <section id="view-waiting" hidden>
+    <h1>내 순서를 기다리고 있어요</h1>
+    <p class="rank-label">내 순번</p>
+    <p class="rank-num" id="rank">–</p>
+    <p class="rank-total" id="total"></p>
+    <div class="bar"><div id="progress"></div></div>
+    <p class="hint"><span class="pulse"></span>앞 사용자가 이용을 마치면 자리가 나 입장됩니다. 화면을 닫지 마세요.</p>
+    <p class="uid" id="waitingUid"></p>
+  </section>
+
+  <!-- 상태 4: 입장 완료 -->
+  <section id="view-admitted" hidden>
+    <div class="check">✓</div>
+    <h1>입장이 완료되었습니다</h1>
+    <p class="admitted-msg">서비스 이용을 마치면 완료를 눌러 자리를 반납해 주세요.<br>다음 대기자가 입장할 수 있어요.</p>
+    <button id="completeBtn" class="ghost">이용 완료 (자리 반납)</button>
+    <p id="completeError" class="error"></p>
+    <p class="uid" id="admittedUid"></p>
+  </section>
+
+  <!-- 상태 5: 이용 완료(자리 반납됨) -->
+  <section id="view-done" hidden>
+    <h1>이용이 종료되었습니다</h1>
+    <p class="admitted-msg">자리를 반납했어요. 이용해 주셔서 감사합니다.</p>
+    <button id="againBtn" class="ghost">대기열 다시 진입</button>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const views = ["view-enter", "view-pending", "view-waiting", "view-admitted", "view-done"];
+const show = (id) => views.forEach((v) => { $(v).hidden = v !== id; });
+
+$("userId").value = "guest-" + Math.random().toString(36).slice(2, 6);
+
+let timer = null;
+let firstTotal = null; // 진행률 기준점: 처음 관측한 전체 대기 인원
+let currentUserId = null; // 완료(자리 반납) 요청에 사용
+
+async function enter() {
+  const userId = $("userId").value.trim();
+  if (!userId) { $("enterError").textContent = "사용자 ID를 입력해 주세요."; return; }
+  $("enterError").textContent = "";
+  try {
+    const res = await fetch("/queue/enter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+  } catch (e) {
+    $("enterError").textContent = "진입 요청에 실패했어요. 잠시 후 다시 시도해 주세요.";
+    return;
+  }
+  currentUserId = userId;
+  ["pendingUid", "waitingUid", "admittedUid"].forEach((id) => { $(id).textContent = "ID: " + userId; });
+  show("view-pending");
+  timer = setInterval(() => poll(userId), 1000);
+  poll(userId);
+}
+
+async function complete() {
+  if (!currentUserId) return;
+  $("completeError").textContent = "";
+  try {
+    const res = await fetch("/queue/complete/" + encodeURIComponent(currentUserId), { method: "POST" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+  } catch (e) {
+    $("completeError").textContent = "완료 처리에 실패했어요. 잠시 후 다시 시도해 주세요.";
+    return;
+  }
+  show("view-done");
+}
+
+function again() {
+  firstTotal = null;
+  currentUserId = null;
+  $("userId").value = "guest-" + Math.random().toString(36).slice(2, 6);
+  $("enterError").textContent = "";
+  show("view-enter");
+}
+
+async function poll(userId) {
+  let data;
+  try {
+    const res = await fetch("/queue/rank/" + encodeURIComponent(userId));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    data = await res.json();
+  } catch (e) {
+    return; // 일시 오류는 다음 폴링에서 복구
+  }
+  if (data.status === "ADMITTED") {
+    clearInterval(timer);
+    show("view-admitted");
+  } else if (data.status === "WAITING") {
+    $("rank").textContent = data.rank.toLocaleString();
+    $("total").textContent = "전체 대기 " + data.total.toLocaleString() + "명";
+    if (firstTotal === null) firstTotal = Math.max(data.rank, data.total);
+    const done = Math.max(0, Math.min(1, 1 - (data.rank - 1) / firstTotal));
+    $("progress").style.width = (done * 100).toFixed(1) + "%";
+    show("view-waiting");
+  }
+  // NOT_FOUND: 접수 처리 중 화면 유지, 재폴링
+}
+
+$("enterBtn").addEventListener("click", enter);
+$("userId").addEventListener("keydown", (e) => { if (e.key === "Enter") enter(); });
+$("completeBtn").addEventListener("click", complete);
+$("againBtn").addEventListener("click", again);
+</script>
+</body>
+</html>

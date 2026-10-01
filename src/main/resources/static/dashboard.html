@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대기열 모니터링</title>
+<style>
+:root {
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+  --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --series-wait: #2a78d6; --series-admit: #1baf7a; --bad: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+    --series-wait: #3987e5; --series-admit: #199e70; --bad: #e66767;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--plane); color: var(--ink);
+  min-height: 100vh; padding: 32px clamp(16px, 4vw, 48px);
+}
+header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+h1 { font-size: 20px; font-weight: 700; }
+.conn { font-size: 12px; color: var(--muted); }
+.conn.down { color: var(--bad); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 14px; padding: 18px 20px; }
+.tile .k { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.tile .v { font-size: 34px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.tile .u { font-size: 13px; font-weight: 400; color: var(--ink-2); margin-left: 2px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.wait { background: var(--series-wait); }
+.dot.admit { background: var(--series-admit); }
+
+.panel { background: var(--surface); border: 1px solid var(--ring); border-radius: 14px; padding: 20px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.panel h2 { font-size: 14px; font-weight: 600; }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.chart-wrap { position: relative; height: 260px; }
+canvas { width: 100%; height: 100%; display: block; }
+.tooltip {
+  position: absolute; pointer-events: none; visibility: hidden;
+  background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; color: var(--ink-2);
+  box-shadow: 0 2px 8px var(--ring); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.tooltip b { color: var(--ink); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>대기열 모니터링</h1>
+  <span class="conn" id="conn">연결 중…</span>
+</header>
+
+<div class="tiles">
+  <div class="tile"><div class="k"><span class="dot wait"></span>대기 인원</div><div class="v" id="waiting">–</div></div>
+  <div class="tile"><div class="k"><span class="dot admit"></span>입장 인원</div><div class="v" id="admitted">–</div></div>
+  <div class="tile"><div class="k">초당 입장 속도 <span style="font-weight:400">(최근 5초 평균)</span></div><div class="v" id="rate">–<span class="u">명/초</span></div></div>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>최근 60초 추이</h2>
+    <div class="legend">
+      <span><span class="dot wait"></span>대기</span>
+      <span><span class="dot admit"></span>입장</span>
+    </div>
+  </div>
+  <div class="chart-wrap">
+    <canvas id="chart"></canvas>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const MAX_POINTS = 60;
+const samples = []; // { waiting, admitted } 1초 간격, 최대 60개
+const rates = [];   // 최근 5개 admitted 증가분
+let lastAdmitted = null;
+let hoverIndex = null;
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+async function poll() {
+  let s;
+  try {
+    const res = await fetch("/queue/stats");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    s = await res.json();
+    $("conn").textContent = "1초마다 갱신 중";
+    $("conn").classList.remove("down");
+  } catch (e) {
+    $("conn").textContent = "서버 응답 없음 — 재시도 중";
+    $("conn").classList.add("down");
+    return;
+  }
+  if (lastAdmitted !== null) {
+    rates.push(Math.max(0, s.admitted - lastAdmitted));
+    if (rates.length > 5) rates.shift();
+  }
+  lastAdmitted = s.admitted;
+  samples.push({ waiting: s.waiting, admitted: s.admitted });
+  if (samples.length > MAX_POINTS) samples.shift();
+
+  $("waiting").textContent = s.waiting.toLocaleString();
+  $("admitted").textContent = s.admitted.toLocaleString();
+  const avg = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
+  $("rate").innerHTML = avg.toFixed(1) + '<span class="u">명/초</span>';
+  draw();
+}
+
+const PAD = { top: 12, right: 76, bottom: 22, left: 44 };
+
+function draw() {
+  const canvas = $("chart");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+  if (samples.length < 2) return;
+
+  const plotW = w - PAD.left - PAD.right, plotH = h - PAD.top - PAD.bottom;
+  const maxVal = Math.max(1, ...samples.map((p) => Math.max(p.waiting, p.admitted)));
+  const step = niceStep(maxVal / 4);
+  const yMax = Math.ceil(maxVal / step) * step;
+  const x = (i) => PAD.left + (i / (MAX_POINTS - 1)) * plotW;
+  const y = (v) => PAD.top + plotH - (v / yMax) * plotH;
+  const offset = MAX_POINTS - samples.length; // 오른쪽 정렬: 최신이 항상 우측 끝
+
+  // 그리드 + y라벨 (은은하게)
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  ctx.fillStyle = css("--muted"); ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let v = 0; v <= yMax; v += step) {
+    ctx.beginPath(); ctx.moveTo(PAD.left, y(v)); ctx.lineTo(w - PAD.right, y(v)); ctx.stroke();
+    ctx.fillText(v.toLocaleString(), PAD.left - 8, y(v));
+  }
+  // x라벨 (초 전)
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  [-60, -30, 0].forEach((sec) => {
+    const i = MAX_POINTS - 1 + sec;
+    if (i < 0) return;
+    ctx.fillText(sec === 0 ? "지금" : `${-sec}초 전`, x(i), PAD.top + plotH + 8);
+  });
+
+  // 시리즈 (2px 선)
+  const series = [
+    { key: "waiting", color: css("--series-wait"), label: "대기" },
+    { key: "admitted", color: css("--series-admit"), label: "입장" },
+  ];
+  series.forEach((sr) => {
+    ctx.strokeStyle = sr.color; ctx.lineWidth = 2;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath();
+    samples.forEach((p, i) => {
+      const px = x(offset + i), py = y(p[sr.key]);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  });
+
+  // 직접 라벨: 선 끝에 색상 점 + 잉크색 텍스트 (겹치면 세로로 밀어냄)
+  const last = samples[samples.length - 1];
+  const ends = series.map((sr) => ({ ...sr, py: y(last[sr.key]), val: last[sr.key] }))
+    .sort((a, b) => a.py - b.py);
+  for (let i = 1; i < ends.length; i++) {
+    if (ends[i].py - ends[i - 1].py < 14) ends[i].py = ends[i - 1].py + 14;
+  }
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ends.forEach((e) => {
+    const px = x(MAX_POINTS - 1);
+    ctx.fillStyle = e.color;
+    ctx.beginPath(); ctx.arc(px + 8, e.py, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = css("--ink");
+    ctx.fillText(`${e.label} ${e.val.toLocaleString()}`, px + 15, e.py);
+  });
+
+  // hover 크로스헤어
+  if (hoverIndex !== null && hoverIndex >= offset) {
+    const px = x(hoverIndex);
+    ctx.strokeStyle = css("--axis"); ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(px, PAD.top); ctx.lineTo(px, PAD.top + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+    const p = samples[hoverIndex - offset];
+    series.forEach((sr) => {
+      ctx.fillStyle = sr.color;
+      ctx.beginPath(); ctx.arc(px, y(p[sr.key]), 4, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = css("--surface"); ctx.lineWidth = 2; ctx.stroke();
+    });
+  }
+}
+
+function niceStep(raw) {
+  const pow = Math.pow(10, Math.floor(Math.log10(Math.max(1, raw))));
+  for (const m of [1, 2, 5, 10]) if (m * pow >= raw) return m * pow;
+  return 10 * pow;
+}
+
+// 툴팁
+const wrap = document.querySelector(".chart-wrap");
+wrap.addEventListener("mousemove", (e) => {
+  const canvas = $("chart");
+  const rect = canvas.getBoundingClientRect();
+  const plotW = rect.width - PAD.left - PAD.right;
+  const rel = (e.clientX - rect.left - PAD.left) / plotW;
+  const i = Math.round(rel * (MAX_POINTS - 1));
+  const offset = MAX_POINTS - samples.length;
+  if (i < offset || i > MAX_POINTS - 1 || samples.length < 2) { hideTooltip(); return; }
+  hoverIndex = i;
+  const p = samples[i - offset];
+  const secAgo = MAX_POINTS - 1 - i;
+  const tip = $("tooltip");
+  tip.innerHTML = `<b>${secAgo === 0 ? "지금" : secAgo + "초 전"}</b><br>대기 <b>${p.waiting.toLocaleString()}</b> · 입장 <b>${p.admitted.toLocaleString()}</b>`;
+  tip.style.visibility = "visible";
+  const tx = Math.min(e.clientX - rect.left + 12, rect.width - tip.offsetWidth - 4);
+  tip.style.left = tx + "px";
+  tip.style.top = Math.max(0, e.clientY - rect.top - tip.offsetHeight - 10) + "px";
+  draw();
+});
+wrap.addEventListener("mouseleave", hideTooltip);
+function hideTooltip() { hoverIndex = null; $("tooltip").style.visibility = "hidden"; draw(); }
+
+window.addEventListener("resize", draw);
+setInterval(poll, 1000);
+poll();
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+spring:
+  kafka:
+    bootstrap-servers: localhost:19092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+queue:
+  topic: waiting-queue
+  capacity: 100          # 동시 활성(서비스 중) 최대 인원
+  active-ttl: 5m         # 완료 호출 없이 사라진 유저의 자리를 회수하는 TTL 안전망
+
+# 모니터링: Actuator 엔드포인트 노출 설정
+management:
+  endpoints:
+    web:
+      exposure:
+        # Prometheus가 긁어갈 /actuator/prometheus 및 health/metrics 공개
+        include: health,info,metrics,prometheus
+  metrics:
+    tags:
+      # 모든 메트릭에 application 라벨 부여 → Grafana에서 서비스 구분
+      application: waiting-queue-poc

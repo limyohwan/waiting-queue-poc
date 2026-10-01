@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  앱 로그를 콘솔에 출력하는 동시에 Loki로 전송하는 logback 설정.
+  Grafana에서 {app="waiting-queue-poc"} LogQL로 앱 로그를 조회할 수 있다.
+
+  주의: 앱이 호스트에서 실행되므로 Loki는 localhost:3100(호스트 공개 포트)로 접속한다.
+        Loki가 떠 있지 않아도 어펜더는 버퍼링 후 조용히 실패할 뿐 앱은 정상 동작한다.
+-->
+<configuration>
+    <!-- 스프링 부트 기본 콘솔 패턴/설정 재사용 -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- 메트릭/로그 라벨에 쓸 애플리케이션 이름 -->
+    <springProperty scope="context" name="appName" source="spring.application.name"/>
+
+    <!-- Loki 전송 어펜더 -->
+    <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+        <http>
+            <url>http://localhost:3100/loki/api/v1/push</url>
+        </http>
+        <format>
+            <!-- Loki 라벨: app / level 로 필터링 가능하게 부여 -->
+            <label>
+                <pattern>app=${appName},level=%level</pattern>
+            </label>
+            <!-- 로그 본문은 색상코드 없는 파일용 패턴 사용(Grafana에서 ANSI 코드 없이 깔끔하게 표시) -->
+            <message>
+                <pattern>${FILE_LOG_PATTERN}</pattern>
+            </message>
+        </format>
+    </appender>
+
+    <!-- 콘솔 + Loki 동시 출력 -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="LOKI"/>
+    </root>
+</configuration>
